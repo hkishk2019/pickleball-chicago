@@ -5,18 +5,15 @@ FastAPI backend).  If the DB is empty / missing it runs the seed pipeline.
 """
 from __future__ import annotations
 
-import math
 import os
 import sys
 from pathlib import Path
 
-import folium
 import pandas as pd
+import pydeck as pdk
 import streamlit as st
-from folium.plugins import MarkerCluster
 from sqlalchemy import create_engine, func as sqlfunc
 from sqlalchemy.orm import sessionmaker
-from streamlit_folium import st_folium
 
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
@@ -31,6 +28,8 @@ connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite")
 engine = create_engine(DATABASE_URL, connect_args=connect_args)
 Session = sessionmaker(bind=engine)
 
+PAGE_SIZE = 20
+
 # ── Page config ──────────────────────────────────────────────────
 
 st.set_page_config(
@@ -43,14 +42,11 @@ st.set_page_config(
 st.markdown("""
 <style>
     [data-testid="stSidebar"] {background: #f8faf8;}
-    .court-card {border:1px solid #e5e7eb; border-radius:12px; padding:16px; margin-bottom:8px; background:white;}
+    .court-card {border:1px solid #e5e7eb; border-radius:12px; padding:16px;
+                 margin-bottom:8px; background:white;}
     .court-card:hover {border-color:#bbf7d0; box-shadow:0 4px 12px rgba(0,0,0,.06);}
-    .badge {display:inline-block; padding:2px 10px; border-radius:8px; font-size:12px; font-weight:500; margin-right:4px; margin-bottom:4px;}
-    .badge-public {background:#f0fdf4; color:#15803d;}
-    .badge-fee {background:#fff7ed; color:#c2410c;}
-    .badge-members {background:#eef2ff; color:#4338ca;}
-    .badge-indoor {background:#eff6ff; color:#1d4ed8;}
-    .badge-outdoor {background:#eff6ff; color:#1d4ed8;}
+    .badge {display:inline-block; padding:2px 10px; border-radius:8px;
+            font-size:12px; font-weight:500; margin-right:4px; margin-bottom:4px;}
     .stars {color:#d97706;}
 </style>
 """, unsafe_allow_html=True)
@@ -83,28 +79,19 @@ def load_courts() -> pd.DataFrame:
 
 # ── Helpers ──────────────────────────────────────────────────────
 
-def haversine_m(lat1, lng1, lat2, lng2):
-    R = 6_371_000
-    p1, p2 = math.radians(lat1), math.radians(lat2)
-    dp, dl = math.radians(lat2 - lat1), math.radians(lng2 - lng1)
-    a = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
-    return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
-
-
 def access_color(t):
     return {"public": "#15803d", "fee": "#c2410c", "members": "#4338ca"}.get(t, "#6b7280")
-
 
 def access_bg(t):
     return {"public": "#f0fdf4", "fee": "#fff7ed", "members": "#eef2ff"}.get(t, "#f3f4f6")
 
-
-def star_str(rating):
-    if not rating:
-        return ""
-    full = int(rating)
-    half = rating - full >= 0.3
-    return "★" * full + ("½" if half else "") + "☆" * (5 - full - (1 if half else 0))
+def _rgb(t):
+    """Return pydeck-friendly [R,G,B,A] for access type."""
+    return {
+        "public": [22, 101, 52, 200],
+        "fee": [194, 65, 12, 200],
+        "members": [67, 56, 202, 200],
+    }.get(t, [107, 114, 128, 200])
 
 # ── Sidebar filters ──────────────────────────────────────────────
 
@@ -162,6 +149,8 @@ elif sort_by == "Rating":
 else:
     df = df.sort_values("name", key=lambda s: s.str.lower(), na_position="last")
 
+df = df.reset_index(drop=True)
+
 # ── Stats bar ────────────────────────────────────────────────────
 
 with Session() as db:
@@ -178,40 +167,69 @@ m4.metric("Cities", f"{n_cities}")
 
 map_col, list_col = st.columns([3, 2])
 
-# Map
+# ── Map (pydeck — native, fast) ──────────────────────────────────
+
 with map_col:
-    map_df = df.dropna(subset=["latitude", "longitude"])
-    m = folium.Map(location=[CHICAGO_LAT, CHICAGO_LNG], zoom_start=11,
-                   tiles="CartoDB Voyager")
-    cluster = MarkerCluster()
-    for _, row in map_df.iterrows():
-        popup_lines = [f"<b>{row['name']}</b>"]
-        if row.get("address"):
-            popup_lines.append(f"<br><span style='color:#6b7280;font-size:12px'>{row['address']}</span>")
-        if row.get("rating"):
-            popup_lines.append(f"<br><span style='color:#d97706;font-size:12px'>★ {row['rating']}</span>")
-        popup_html = "".join(popup_lines)
-        folium.Marker(
-            [row["latitude"], row["longitude"]],
-            popup=folium.Popup(popup_html, max_width=250),
-            tooltip=row["name"],
-            icon=folium.Icon(color="green", icon="info-sign"),
-        ).add_to(cluster)
-    cluster.add_to(m)
+    map_df = df.dropna(subset=["latitude", "longitude"]).copy()
 
     if not map_df.empty:
-        m.fit_bounds([[map_df["latitude"].min(), map_df["longitude"].min()],
-                      [map_df["latitude"].max(), map_df["longitude"].max()]],
-                     padding=(30, 30))
+        map_df["color"] = map_df["access_type"].apply(_rgb)
+        map_df["radius"] = map_df["num_courts"].fillna(1).clip(lower=1).apply(lambda n: 40 + n * 15)
+        map_df["tooltip_text"] = map_df.apply(
+            lambda r: f"{r['name']}\n{r.get('address') or ''}"
+                      + (f"\n★ {r['rating']}" if r.get("rating") else ""),
+            axis=1,
+        )
 
-    st_folium(m, use_container_width=True, height=620, returned_objects=[])
+        layer = pdk.Layer(
+            "ScatterplotLayer",
+            data=map_df,
+            get_position=["longitude", "latitude"],
+            get_radius="radius",
+            get_fill_color="color",
+            pickable=True,
+            auto_highlight=True,
+            radius_min_pixels=6,
+            radius_max_pixels=25,
+        )
 
-# Court list
+        view = pdk.ViewState(
+            latitude=map_df["latitude"].mean(),
+            longitude=map_df["longitude"].mean(),
+            zoom=10,
+            pitch=0,
+        )
+
+        st.pydeck_chart(
+            pdk.Deck(
+                layers=[layer],
+                initial_view_state=view,
+                tooltip={"text": "{tooltip_text}"},
+                map_style="mapbox://styles/mapbox/light-v11",
+            ),
+            use_container_width=True,
+            height=620,
+        )
+    else:
+        st.info("No courts with coordinates to show on map.")
+
+# ── Court list (paginated) ───────────────────────────────────────
+
 with list_col:
-    if df.empty:
+    total_rows = len(df)
+    if total_rows == 0:
         st.info("No courts match your filters.")
     else:
-        for _, row in df.iterrows():
+        total_pages = max(1, -(-total_rows // PAGE_SIZE))  # ceil division
+        page = st.number_input(
+            f"Page (1–{total_pages})", min_value=1, max_value=total_pages, value=1, key="page"
+        )
+        start = (page - 1) * PAGE_SIZE
+        page_df = df.iloc[start : start + PAGE_SIZE]
+
+        st.caption(f"Showing {start + 1}–{min(start + PAGE_SIZE, total_rows)} of {total_rows}")
+
+        for _, row in page_df.iterrows():
             badges = ""
             if row.get("access_type"):
                 bg, fg = access_bg(row["access_type"]), access_color(row["access_type"])

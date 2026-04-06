@@ -7,6 +7,5 @@ apscheduler
 lxml
 python-dotenv
 streamlit
-streamlit-folium
-folium
+pydeck
 pandas
