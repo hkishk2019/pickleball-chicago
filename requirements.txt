@@ -6,3 +6,7 @@ beautifulsoup4
 apscheduler
 lxml
 python-dotenv
+streamlit
+streamlit-folium
+folium
+pandas
