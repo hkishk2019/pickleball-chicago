@@ -58,9 +58,15 @@ def _ensure_db():
     with Session() as db:
         count = db.query(sqlfunc.count(Court.id)).scalar() or 0
     if count == 0:
-        st.info("Database is empty — running seed pipeline (takes ~2 min on first deploy)…")
+        st.info("Database is empty — running seed + discovery pipeline (takes ~2–3 min on first deploy)…")
         from scripts.seed import main as seed_main
         seed_main()
+        try:
+            import asyncio
+            from scripts.enrich import run_enrichment
+            asyncio.run(run_enrichment())
+        except Exception as exc:
+            st.warning(f"Discovery enrichment had an error (seed data is still available): {exc}")
         st.rerun()
 
 

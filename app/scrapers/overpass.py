@@ -9,7 +9,10 @@ import math
 
 import httpx
 
-OVERPASS_URL = "https://overpass-api.de/api/interpreter"
+OVERPASS_URLS = [
+    "https://overpass-api.de/api/interpreter",
+    "https://overpass.kumi.systems/api/interpreter",
+]
 
 # Bounding box: roughly greater Chicago metro (south-lat, west-lng, north-lat, east-lng)
 BBOX = "41.5,-88.3,42.3,-87.3"
@@ -127,19 +130,25 @@ def _merge_cluster(cluster: list[dict]) -> dict:
 async def scrape_all() -> list[dict]:
     query = QUERY_TEMPLATE.format(bbox=BBOX)
 
-    async with httpx.AsyncClient(timeout=60.0) as client:
-        try:
-            resp = await client.post(
-                OVERPASS_URL,
-                data={"data": query},
-                headers={"User-Agent": "PickleballChicagoFinder/1.0"},
-            )
-        except httpx.HTTPError as exc:
-            print(f"  [overpass] request failed: {exc}")
-            return []
+    resp = None
+    async with httpx.AsyncClient(timeout=90.0) as client:
+        for url in OVERPASS_URLS:
+            try:
+                print(f"  [overpass] trying {url} …")
+                resp = await client.post(
+                    url,
+                    data={"data": query},
+                    headers={"User-Agent": "PickleballChicagoFinder/1.0"},
+                )
+                if resp.status_code == 200:
+                    break
+                print(f"  [overpass] HTTP {resp.status_code} from {url}")
+            except httpx.HTTPError as exc:
+                print(f"  [overpass] {url} failed: {exc}")
+                resp = None
 
-    if resp.status_code != 200:
-        print(f"  [overpass] HTTP {resp.status_code}")
+    if resp is None or resp.status_code != 200:
+        print("  [overpass] all endpoints failed")
         return []
 
     try:
