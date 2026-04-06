@@ -1,0 +1,14 @@
+---
+description: Where the Yelp Fusion API key lives for pickleball-chicago
+globs: scripts/enrich.py,app/scrapers/yelp_enricher.py
+alwaysApply: false
+---
+
+# Yelp API key (local)
+
+- **File:** project root `.env` (same directory as `requirements.txt`).
+- **Variable:** `YELP_API_KEY=<your Fusion API key>`
+- **Loader:** `scripts/enrich.py` calls `load_dotenv(repo_root / ".env")` before Yelp discovery/enrichment.
+- Do not commit `.env`; template is `.env.example`.
+
+When the user asks to run Yelp discovery or `scripts/enrich.py` with Yelp, read or ensure the key is set in that `.env` file (never echo the secret in chat).
